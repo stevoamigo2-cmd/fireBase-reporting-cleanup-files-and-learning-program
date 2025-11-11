@@ -23,4 +23,4 @@ jobs:
       - name: Run Firestore cleanup
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-        run: node cleanup.js
+        run: node scripts/cleanup.js
