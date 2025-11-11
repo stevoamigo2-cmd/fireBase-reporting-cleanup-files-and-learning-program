@@ -7,9 +7,9 @@ const MOBILE_EXPIRE_HOURS = 10;        // mobile reports expire after 10h (unles
 const OTHER_EXPIRE_HOURS  = 10;        // other hazards expire after 10h
 const FIXED_REMOVE_THRESHOLD = -3;     // fixed camera removal requires count <= -3
 const HOTSPOT_RADIUS_M = 200;          // radius to consider same hotspot
-const HOTSPOT_WINDOW_DAYS = 7;         // lookback window for hotspot detection
+const HOTSPOT_WINDOW_DAYS = 10;         // lookback window for hotspot detection
 const HOTSPOT_THRESHOLD = 3;           // reports needed in window to mark hotspot
-const PRESERVE_HOTSPOT_DAYS = 7;       // when hotspot detected, preserve camera docs for this many days
+const PRESERVE_HOTSPOT_DAYS = 10;       // when hotspot detected, preserve camera docs for this many days
 
 // Helper ms
 const MS = {
