@@ -3,13 +3,13 @@ const admin = require('firebase-admin');
 const geolib = require('geolib');
 
 // CONFIGURATION - tune these values
-const MOBILE_EXPIRE_HOURS = 10;        // mobile reports expire after 8h (unless hotspot)
-const OTHER_EXPIRE_HOURS  = 10;        // other hazards expire after 4h
-const FIXED_REMOVE_THRESHOLD = -3;    // fixed camera removal requires count <= -3
-const HOTSPOT_RADIUS_M = 200;         // radius to consider same hotspot
-const HOTSPOT_WINDOW_DAYS = 7;        // lookback window for hotspot detection
-const HOTSPOT_THRESHOLD = 3;          // reports needed in window to mark hotspot
-const PRESERVE_HOTSPOT_DAYS = 7;      // when hotspot detected, preserve camera docs for this many days
+const MOBILE_EXPIRE_HOURS = 10;        // mobile reports expire after 10h (unless hotspot / preserved)
+const OTHER_EXPIRE_HOURS  = 10;        // other hazards expire after 10h
+const FIXED_REMOVE_THRESHOLD = -3;     // fixed camera removal requires count <= -3
+const HOTSPOT_RADIUS_M = 200;          // radius to consider same hotspot
+const HOTSPOT_WINDOW_DAYS = 7;         // lookback window for hotspot detection
+const HOTSPOT_THRESHOLD = 3;           // reports needed in window to mark hotspot
+const PRESERVE_HOTSPOT_DAYS = 7;       // when hotspot detected, preserve camera docs for this many days
 
 // Helper ms
 const MS = {
@@ -32,11 +32,10 @@ async function main() {
 
   console.log('Starting Firestore camera cleanup...', new Date(now).toISOString());
 
-  // Fetch all camera docs (for small/medium datasets this is fine).
+  // Fetch all camera docs (small/medium dataset assumed)
   const camsSnap = await db.collection('cameras').get();
   console.log(`Found ${camsSnap.size} camera docs`);
 
-  // Prepare array of docs for hotspot checks
   const cams = camsSnap.docs.map(d => ({ id: d.id, data: d.data() }));
 
   // Precompute window cutoff
@@ -44,7 +43,7 @@ async function main() {
 
   // 1) Per-doc maintenance: add missing fields, enforce thresholds, expire/delete by expiresAt or count
   for (const cam of cams) {
-    const d = cam.data;
+    const d = cam.data || {};
     const id = cam.id;
     const type = (d.type || 'mobile_camera');
 
@@ -66,9 +65,8 @@ async function main() {
       console.log(`[${id}] Set default confidence=${conf}`);
     }
 
-    // Fixed cameras: do NOT delete automatically.
+    // Fixed cameras: ensure hotspot flag and do not auto-delete (mark removed only by threshold)
     if (type === 'fixed_camera') {
-      // ensure hotspot true for fixed camera
       if (!d.hotspot) {
         await db.collection('cameras').doc(id).update({ hotspot: true });
         d.hotspot = true;
@@ -76,7 +74,6 @@ async function main() {
       }
 
       if (count <= FIXED_REMOVE_THRESHOLD && !d.removed) {
-        // mark removed = true (do not physically delete)
         await db.collection('cameras').doc(id).update({
           removed: true,
           removedByWorker: true,
@@ -84,12 +81,12 @@ async function main() {
         });
         console.log(`[${id}] Fixed camera marked removed (count=${count} <= ${FIXED_REMOVE_THRESHOLD})`);
       }
-      // skip deletion for fixed cameras
-      continue;
+      continue; // skip deletion for fixed cameras
     }
 
     // For mobile_camera and other:
     const lifetimeHours = (type === 'other') ? OTHER_EXPIRE_HOURS : MOBILE_EXPIRE_HOURS;
+
     // If expiresAt missing, add it using timestamp + lifetime
     if (!d.expiresAt) {
       const expiresAt = (Number(d.timestamp) || now) + lifetimeHours * MS.HOUR;
@@ -98,61 +95,108 @@ async function main() {
       console.log(`[${id}] Added expiresAt=${new Date(expiresAt).toISOString()}`);
     }
 
-    // Update lastSeen field if missing
+    // Update lastSeen if missing
     if (!d.lastSeen) {
       await db.collection('cameras').doc(id).update({ lastSeen: d.timestamp || now });
       d.lastSeen = d.timestamp || now;
     }
 
-    // Immediate deletion if count <= 0 and not hotspot
-    if (count <= 0) {
-      if (!d.hotspot) {
+    // ===== PATCH: preserve docs for hotspot window, hide from app on expiry =====
+    const ts = Number(d.timestamp) || 0;
+    const windowCutoff = hotspotWindowCutoff;
+
+    // 1) If count <= 0 and not a hotspot: delete only when older than hotspot window; otherwise mark removed=true so app hides it
+    if (!d.hotspot && count <= 0) {
+      if (ts < windowCutoff) {
         await db.collection('cameras').doc(id).delete();
-        console.log(`[${id}] Deleted because count <= 0 and not hotspot`);
+        console.log(`[${id}] Deleted because count <= 0 and not hotspot (older than hotspot window)`);
+        continue;
+      } else {
+        if (!d.removed) {
+          await db.collection('cameras').doc(id).update({ removed: true, lastSeen: now });
+          console.log(`[${id}] Marked removed=true because count <= 0 (kept for hotspot window)`);
+        }
         continue;
       }
     }
 
-    // Delete if expired and not hotspot
-    if (d.expiresAt && Number(d.expiresAt) < now && !d.hotspot) {
-      await db.collection('cameras').doc(id).delete();
-      console.log(`[${id}] Deleted because expired (${new Date(Number(d.expiresAt)).toISOString()})`);
-      continue;
+    // 2) If expiresAt reached: hide from app (removed=true) but keep until hotspot window cutoff; if hotspot, extend preservation
+    if (d.expiresAt && Number(d.expiresAt) < now) {
+      if (!d.hotspot) {
+        if (ts < windowCutoff) {
+          await db.collection('cameras').doc(id).delete();
+          console.log(`[${id}] Deleted (expired and older than hotspot window)`);
+          continue;
+        } else {
+          if (!d.removed) {
+            await db.collection('cameras').doc(id).update({ removed: true, lastSeen: now });
+            console.log(`[${id}] Marked removed=true (expired) — kept for hotspot window`);
+          }
+          continue;
+        }
+      } else {
+        // hotspot: extend preservation
+        const preserveUntil = now + PRESERVE_HOTSPOT_DAYS * MS.DAY;
+        await db.collection('cameras').doc(id).update({ expiresAt: preserveUntil, lastSeen: now });
+        console.log(`[${id}] Hotspot preserved until ${new Date(preserveUntil).toISOString()}`);
+        continue;
+      }
     }
+    // ===== end patch =====
 
-    // Otherwise leave doc in place (maybe update small housekeeping if desired)
+    // otherwise leave the doc in place so it can participate in hotspot detection
   } // end per-cam pass
 
-  // 2) Hotspot detection pass (group nearby recent reports)
-  const mobileDocs = cams.filter(c => {
-    const t = c.data.type || 'mobile_camera';
-    return (t === 'mobile_camera') && (c.data.timestamp && c.data.timestamp >= hotspotWindowCutoff);
-  });
+  // 1b) OPTIONAL: include recent raw reports from 'camera_reports' collection (append-only) so hotspot detection can use all submissions
+  // If you don't use camera_reports, this block is harmless (it will skip if collection empty).
+  let reportDocs = [];
+  try {
+    const reportsSnap = await db.collection('camera_reports')
+      .where('timestamp', '>=', hotspotWindowCutoff)
+      .get();
+    reportDocs = reportsSnap.docs.map(d => ({ id: `r_${d.id}`, data: d.data() }));
+    if (reportDocs.length) console.log(`Included ${reportDocs.length} recent raw reports for hotspot detection`);
+  } catch (err) {
+    // ignore if camera_reports doesn't exist or query fails
+  }
 
-  console.log(`Checking hotspots among ${mobileDocs.length} recent mobile docs`);
+  // 2) Hotspot detection pass (group nearby recent mobile reports)
+  // Build source list: recent mobile docs from 'cameras' + optional recent 'camera_reports'
+  const mobileDocs = cams
+    .filter(c => {
+      const t = c.data && c.data.type ? c.data.type : 'mobile_camera';
+      return (t === 'mobile_camera') && (c.data && c.data.timestamp && c.data.timestamp >= hotspotWindowCutoff);
+    })
+    .concat(reportDocs.filter(r => {
+      const t = r.data && r.data.type ? r.data.type : 'mobile_camera';
+      return t === 'mobile_camera' && r.data && r.data.timestamp && r.data.timestamp >= hotspotWindowCutoff;
+    }));
+
+  console.log(`Checking hotspots among ${mobileDocs.length} recent mobile docs/reports`);
 
   // naive O(n^2) cluster check — fine for small/medium dataset
   for (const base of mobileDocs) {
     const b = base.data;
-    const id = base.id;
-
+    if (!b || !b.lat || !b.lon || !b.timestamp) continue;
     // skip if already hotspot
     if (b.hotspot) continue;
 
-    // find nearby reports in window
+    // find nearby reports in window (search both camera docs and raw reports)
     const nearby = mobileDocs.filter(o => {
       const od = o.data;
-      if (!od.lat || !od.lon || !od.timestamp) return false;
-      if (od.timestamp < hotspotWindowCutoff) return false;
+      if (!od || !od.lat || !od.lon || !od.timestamp) return false;
       const dist = geolib.getDistance({ latitude: b.lat, longitude: b.lon }, { latitude: od.lat, longitude: od.lon });
       return dist <= HOTSPOT_RADIUS_M;
     });
 
     if (nearby.length >= HOTSPOT_THRESHOLD) {
-      // mark all cluster docs as hotspot and increase their expiresAt / confidence
+      // mark cluster docs (only those backed by 'cameras' collection) as hotspot and increase expiresAt/confidence
       for (const n of nearby) {
         const nid = n.id;
-        const nd = n.data;
+        const nd = n.data || {};
+        // Only update 'cameras' docs (skip pure 'camera_reports' entries prefixed with r_)
+        if (nid && nid.startsWith('r_')) continue;
+
         const newConf = Math.min(100, (nd.confidence || 70) + 20);
         const preserveUntil = Date.now() + (PRESERVE_HOTSPOT_DAYS * MS.DAY);
 
@@ -166,7 +210,7 @@ async function main() {
         console.log(`[${nid}] Promoted to hotspot (cluster size=${nearby.length})`);
       }
 
-      // also upsert a summary doc into 'camera_hotspots' collection keyed by rounded coords
+      // upsert a summary doc into 'camera_hotspots' collection keyed by rounded coords
       const keyLat = Number(b.lat).toFixed(4);
       const keyLon = Number(b.lon).toFixed(4);
       const hotspotId = `hs_${keyLat}_${keyLon}`;
