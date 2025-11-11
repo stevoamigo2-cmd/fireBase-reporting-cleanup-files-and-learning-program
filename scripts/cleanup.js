@@ -12,7 +12,7 @@ const HOTSPOT_THRESHOLD = 3;           // reports needed in window to mark hotsp
 const PRESERVE_HOTSPOT_DAYS = 10;       // when hotspot detected, preserve camera docs for this many days
 
 // Helper ms
-const MS = {
+const MS = {await db.collection('cameras').doc(id).update({ removed: true, removedByWorker: true, lastSeen: now });
   HOUR: 1000 * 60 * 60,
   DAY: 1000 * 60 * 60 * 24
 };
@@ -113,7 +113,8 @@ async function main() {
         continue;
       } else {
         if (!d.removed) {
-          await db.collection('cameras').doc(id).update({ removed: true, lastSeen: now });
+          await db.collection('cameras').doc(id).update({ removed: true, removedByWorker: true, lastSeen: now });
+
           console.log(`[${id}] Marked removed=true because count <= 0 (kept for hotspot window)`);
         }
         continue;
@@ -129,7 +130,8 @@ async function main() {
           continue;
         } else {
           if (!d.removed) {
-            await db.collection('cameras').doc(id).update({ removed: true, lastSeen: now });
+            await db.collection('cameras').doc(id).update({ removed: true, removedByWorker: true, lastSeen: now });
+
             console.log(`[${id}] Marked removed=true (expired) — kept for hotspot window`);
           }
           continue;
