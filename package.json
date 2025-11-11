@@ -1,0 +1,9 @@
+{
+  "name": "firestore-camera-cleaner",
+  "version": "1.0.0",
+  "main": "cleanup.js",
+  "dependencies": {
+    "firebase-admin": "^12.6.0",
+    "geolib": "^3.3.3"
+  }
+}
