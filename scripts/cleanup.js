@@ -3,8 +3,8 @@ const admin = require('firebase-admin');
 const geolib = require('geolib');
 
 // CONFIGURATION - tune these values
-const MOBILE_EXPIRE_HOURS = 8;        // mobile reports expire after 8h (unless hotspot)
-const OTHER_EXPIRE_HOURS  = 4;        // other hazards expire after 4h
+const MOBILE_EXPIRE_HOURS = 10;        // mobile reports expire after 8h (unless hotspot)
+const OTHER_EXPIRE_HOURS  = 10;        // other hazards expire after 4h
 const FIXED_REMOVE_THRESHOLD = -3;    // fixed camera removal requires count <= -3
 const HOTSPOT_RADIUS_M = 200;         // radius to consider same hotspot
 const HOTSPOT_WINDOW_DAYS = 7;        // lookback window for hotspot detection
