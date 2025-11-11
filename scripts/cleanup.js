@@ -12,10 +12,7 @@ const HOTSPOT_THRESHOLD = 3;           // reports needed in window to mark hotsp
 const PRESERVE_HOTSPOT_DAYS = 10;       // when hotspot detected, preserve camera docs for this many days
 
 // Helper ms
-const MS = {await db.collection('cameras').doc(id).update({ removed: true, removedByWorker: true, lastSeen: now });
-  HOUR: 1000 * 60 * 60,
-  DAY: 1000 * 60 * 60 * 24
-};
+const MS = { HOUR: 1000 * 60 * 60, DAY: 1000 * 60 * 60 * 24 };
 
 async function main() {
   if (!process.env.FIREBASE_SERVICE_ACCOUNT) {
