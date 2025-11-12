@@ -7,9 +7,9 @@ const MOBILE_EXPIRE_HOURS = 10;        // mobile reports expire after 10h (unles
 const OTHER_EXPIRE_HOURS  = 10;        // other hazards expire after 10h
 const FIXED_REMOVE_THRESHOLD = -3;     // fixed camera removal requires count <= -3
 const HOTSPOT_RADIUS_M = 200;          // radius to consider same hotspot
-const HOTSPOT_WINDOW_DAYS = 10;         // lookback window for hotspot detection
-const HOTSPOT_THRESHOLD = 3;           // reports needed in window to mark hotspot
-const PRESERVE_HOTSPOT_DAYS = 10;       // when hotspot detected, preserve camera docs for this many days
+const HOTSPOT_WINDOW_DAYS = 14;        // lookback window for hotspot detection (changed to 14 days)
+const HOTSPOT_THRESHOLD = 3;           // reports needed in window to mark hotspot (distinct days)
+const PRESERVE_HOTSPOT_DAYS = 10;      // when hotspot detected, preserve camera docs for this many days
 
 // Helper ms
 const MS = { HOUR: 1000 * 60 * 60, DAY: 1000 * 60 * 60 * 24 };
@@ -188,7 +188,18 @@ async function main() {
       return dist <= HOTSPOT_RADIUS_M;
     });
 
-    if (nearby.length >= HOTSPOT_THRESHOLD) {
+    // --- PATCH: require reports on DISTINCT calendar days (UTC) to declare hotspot ---
+    const uniqueDays = new Set(nearby.map(o => {
+      const ts = Number(o.data.timestamp || 0);
+      try {
+        // YYYY-MM-DD in UTC
+        return new Date(ts).toISOString().slice(0,10);
+      } catch (e) {
+        return String(ts);
+      }
+    })).size;
+
+    if (uniqueDays >= HOTSPOT_THRESHOLD) {
       // mark cluster docs (only those backed by 'cameras' collection) as hotspot and increase expiresAt/confidence
       for (const n of nearby) {
         const nid = n.id;
@@ -206,7 +217,7 @@ async function main() {
           lastSeen: Math.max(nd.lastSeen || 0, nd.timestamp || 0)
         });
 
-        console.log(`[${nid}] Promoted to hotspot (cluster size=${nearby.length})`);
+        console.log(`[${nid}] Promoted to hotspot (uniqueDays=${uniqueDays}, cluster size=${nearby.length})`);
       }
 
       // upsert a summary doc into 'camera_hotspots' collection keyed by rounded coords
